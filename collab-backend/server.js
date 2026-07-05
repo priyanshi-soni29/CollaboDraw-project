@@ -45,7 +45,7 @@ function loadDb() {
             }
             return { users, boards: raw.boards || {}, rooms: raw.rooms || {} };
         } catch (e) {
-            console.error('Failed to load db.json, starting fresh:', e.message);
+            console.error(e.message);
         }
     }
     return { users: {}, boards: {}, rooms: {} };
@@ -67,12 +67,13 @@ function persist() {
                     permissions: room.permissions,
                     extraPages: room.extraPages || [],
                     pageNames: room.pageNames || ['Page 1'],
-                    chat: room.chat || []
+                    chat: room.chat || [],
+                    accessType: room.accessType || 'open'
                 }])
             )
         };
         fs.writeFile(DB_FILE, JSON.stringify(serializable), (err) => {
-            if (err) console.error('Persist failed:', err.message);
+            if (err) console.error(err.message);
         });
     }, 300);
 }
@@ -163,7 +164,7 @@ io.on('connection', (socket) => {
         else cb({ success: false, message: 'Invalid credentials' });
     });
 
-    socket.on('create-board', ({ username, boardName, template }, cb) => {
+    socket.on('create-board', ({ username, boardName, template, accessType }, cb) => {
         const id = crypto.randomBytes(4).toString('hex');
         db.boards[username].push({ id, name: boardName });
 
@@ -176,7 +177,8 @@ io.on('connection', (socket) => {
             extraPages: [],
             pageNames: ['Page 1'],
             chat: [],
-            timerEndsAt: null 
+            timerEndsAt: null,
+            accessType: accessType || 'open'
         };
         persist();
         cb({ success: true, boards: db.boards[username] });
@@ -205,7 +207,8 @@ io.on('connection', (socket) => {
         if (!db.rooms[roomId]) return cb({ error: 'Room not found' });
 
         if (!db.rooms[roomId].permissions[username]) {
-            db.rooms[roomId].permissions[username] = 'editor';
+            const defaultRole = db.rooms[roomId].accessType === 'restricted' ? 'viewer' : 'editor';
+            db.rooms[roomId].permissions[username] = defaultRole;
             persist();
         }
         
@@ -462,5 +465,5 @@ io.on('connection', (socket) => {
         }
     });
 });
-
-httpServer.listen(3001, () => console.log(`Pro Server running on 3001`));
+const PORT = process.env.PORT || 3001;
+httpServer.listen(PORT, () => console.log(`Pro Server running on ${PORT}`));

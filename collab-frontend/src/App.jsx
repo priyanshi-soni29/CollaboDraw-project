@@ -5,18 +5,34 @@ import jsPDF from 'jspdf';
 import throttle from 'lodash/throttle';
 import './App.css';
 
-
 let audioCtx = null;
 function getAudioCtx() {
   if (!audioCtx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (AC) audioCtx = new AC();
   }
+  
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
   return audioCtx;
+}
+
+if (typeof window !== 'undefined') {
+  const unlockAudio = () => {
+    const ctx = getAudioCtx();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  };
+  window.addEventListener('pointerdown', unlockAudio, { once: true });
+  window.addEventListener('keydown', unlockAudio, { once: true });
 }
 function playTone(freq = 440, duration = 0.12, type = 'sine', gain = 0.08, delay = 0) {
   const ctx = getAudioCtx();
   if (!ctx) return;
+  
+  if (ctx.state === 'suspended') return;
   const osc = ctx.createOscillator();
   const g = ctx.createGain();
   osc.type = type;
@@ -51,7 +67,8 @@ function useSound(mutedRef) {
   return (name) => { if (!mutedRef.current && SFX[name]) SFX[name](); };
 }
 
-const socket = io('http://localhost:3001');
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+const socket = io(BACKEND_URL);
 
 const STICKY_COLORS = ['#fff6a3', '#ffd6e8', '#c6f7d0', '#c6e6ff', '#ffe0c2'];
 
@@ -83,6 +100,7 @@ export default function App() {
   const [myBoards, setMyBoards] = useState([]);
   const [newBoardName, setNewBoardName] = useState('');
   const [joinBoardId, setJoinBoardId] = useState('');
+  const [newBoardAccess, setNewBoardAccess] = useState('open');
   
   const [activeRoomId, setActiveRoomId] = useState('');
   const [activeUsers, setActiveUsers] = useState({});
@@ -112,6 +130,30 @@ export default function App() {
   const [captions, setCaptions] = useState({}); 
   const speechRecognitionRef = useRef(null);
   const [showQR, setShowQR] = useState(false);
+  const [showZoomMenu, setShowZoomMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showShareMenu, setShowShareMenu] = useState(false);
+  const [showViewMenu, setShowViewMenu] = useState(false);
+  const [showInsertMenu, setShowInsertMenu] = useState(false);
+  const [showExtrasMenu, setShowExtrasMenu] = useState(false);
+  const closeAllToolbarMenus = () => {
+    setShowZoomMenu(false); setShowExportMenu(false); setShowShareMenu(false);
+    setShowViewMenu(false); setShowInsertMenu(false); setShowExtrasMenu(false);
+  };
+ 
+  const toolbarMenuSetters = {
+    zoom: [showZoomMenu, setShowZoomMenu],
+    export: [showExportMenu, setShowExportMenu],
+    share: [showShareMenu, setShowShareMenu],
+    view: [showViewMenu, setShowViewMenu],
+    insert: [showInsertMenu, setShowInsertMenu],
+    extras: [showExtrasMenu, setShowExtrasMenu],
+  };
+  const toggleToolbarMenu = (key) => {
+    const wasOpen = toolbarMenuSetters[key][0];
+    closeAllToolbarMenus();
+    if (!wasOpen) toolbarMenuSetters[key][1](true);
+  };
   const isUpdatingFromServer = useRef(false);
   const hasLoadedCanvasOnce = useRef(false);
   const prevUserCount = useRef(null);
@@ -124,6 +166,8 @@ export default function App() {
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
   const [toasts, setToasts] = useState([]);
+  const [splatters, setSplatters] = useState([]); 
+  
   const sound = useSound(mutedRef);
 
   const toggleMute = () => {
@@ -181,7 +225,6 @@ export default function App() {
     });
   };
 
-  
   useEffect(() => {
     if (!canvas) return;
     canvas.backgroundColor = 'transparent';
@@ -192,6 +235,41 @@ export default function App() {
   useEffect(() => {
       const timer = setInterval(() => setCurrentTime(new Date()), 1000);
       return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalClick = (e) => {
+      if (e.target.closest('#canvas-wrapper') || e.target.closest('.color-picker')) return;
+
+      const colors = ['#ff6ec7', '#7ce8ff', '#ffd97d', '#c9a9ff', '#ff8f70', '#8fd6c4', '#ffb677'];
+      const color = colors[Math.floor(Math.random() * colors.length)];
+      const newSplatter = {
+        id: Date.now() + Math.random(),
+        x: e.clientX,
+        y: e.clientY,
+        color,
+        size: 30 + Math.random() * 40,
+        rotation: Math.random() * 360
+      };
+      
+      setSplatters(prev => [...prev, newSplatter]);
+      setTimeout(() => {
+        setSplatters(prev => prev.filter(s => s.id !== newSplatter.id));
+      }, 800); 
+    };
+    
+    window.addEventListener('click', handleGlobalClick);
+    return () => window.removeEventListener('click', handleGlobalClick);
+  }, []);
+
+  
+  useEffect(() => {
+    const handleClickOutsideMenus = (e) => {
+      if (e.target.closest('.toolbar-group') || e.target.closest('.draw-toggle-btn') || e.target.closest('.draw-tools-popout')) return;
+      closeAllToolbarMenus();
+    };
+    document.addEventListener('mousedown', handleClickOutsideMenus);
+    return () => document.removeEventListener('mousedown', handleClickOutsideMenus);
   }, []);
 
   const [chatOpen, setChatOpen] = useState(false);
@@ -213,7 +291,6 @@ export default function App() {
     if (chatOpen && chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, chatOpen]);
 
-  
   const [pageNames, setPageNames] = useState(['Page 1']);
   const [activePage, setActivePage] = useState(0);
   const activePageRef = useRef(0);
@@ -266,7 +343,6 @@ export default function App() {
       setActivePage(idx);
       isUpdatingFromServer.current = true;
       if (res.canvasJSON) {
-        
         canvas.loadFromJSON(res.canvasJSON, () => { canvas.backgroundColor = 'transparent'; canvas.renderAll(); isUpdatingFromServer.current = false; });
       } else {
         canvas.clear();
@@ -509,9 +585,9 @@ export default function App() {
   const createBoard = (e) => {
     e.preventDefault();
     if (!newBoardName) return;
-    socket.emit('create-board', { username, boardName: newBoardName, template: boardTemplate }, (res) => {
+    socket.emit('create-board', { username, boardName: newBoardName, template: boardTemplate, accessType: newBoardAccess }, (res) => {
       if (res.success) {
-        setMyBoards(res.boards); setNewBoardName(''); setBoardTemplate('blank');
+        setMyBoards(res.boards); setNewBoardName(''); setBoardTemplate('blank'); setNewBoardAccess('open');
         sound('success');
         showToast(`Board "${newBoardName}" created`, 'success');
         setProfile(prev => prev ? { ...prev, totalBoards: res.boards.length } : prev);
@@ -551,7 +627,6 @@ export default function App() {
     const initW = wrapper ? wrapper.clientWidth : window.innerWidth - 150;
     const initH = wrapper ? wrapper.clientHeight : window.innerHeight - 150;
 
-  
     const initCanvas = new fabric.Canvas('fabric-canvas', { 
         width: initW, height: initH, backgroundColor: 'transparent', selection: true 
     });
@@ -583,7 +658,7 @@ export default function App() {
       if ((pageIndex || 0) !== activePageRef.current) return; 
       isUpdatingFromServer.current = true;
       initCanvas.loadFromJSON(jsonString, () => {
-        initCanvas.backgroundColor = 'transparent'; // UPDATED
+        initCanvas.backgroundColor = 'transparent';
         initCanvas.renderAll(); isUpdatingFromServer.current = false;
         if (hasLoadedCanvasOnce.current && !suppressNextTick.current) sound('tick');
         suppressNextTick.current = false;
@@ -594,7 +669,7 @@ export default function App() {
     socket.on('clear-canvas', (payload) => {
         const pageIndex = typeof payload === 'object' && payload !== null ? payload.pageIndex : 0;
         if ((pageIndex || 0) !== activePageRef.current) return;
-        isUpdatingFromServer.current = true; initCanvas.clear(); initCanvas.backgroundColor = 'transparent'; // UPDATED
+        isUpdatingFromServer.current = true; initCanvas.clear(); initCanvas.backgroundColor = 'transparent';
         initCanvas.renderAll(); isUpdatingFromServer.current = false; 
         sound('clear');
     });
@@ -775,7 +850,7 @@ export default function App() {
 
   const startCaptions = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { showToast('Live captions need Chrome (Web Speech API not supported here)', 'info'); return; }
+    if (!SR) { showToast('Live captions need Chrome', 'info'); return; }
     try {
       const recognition = new SR();
       recognition.continuous = true;
@@ -907,7 +982,7 @@ export default function App() {
     handleToolChange('select');
     const center = canvas.getCenter();
     
-    const codeSnippet = new fabric.Textbox('// Double click to write code\nfunction hello() {\n  console.log("world");\n}', {
+    const codeSnippet = new fabric.Textbox('function hello() {\n  console.log("world");\n}', {
       left: center.left - 150,
       top: center.top - 80,
       width: 300,
@@ -1024,7 +1099,7 @@ export default function App() {
   const startDoodleChallenge = () => {
     if (myRole === 'viewer' || !activeRoomId) return;
     const word = DOODLE_WORDS[Math.floor(Math.random() * DOODLE_WORDS.length)];
-    showToast(`🤫 Your secret word is "${word}" — don't type it in chat!`, 'success');
+    showToast(`🤫 Your secret word is "${word}"`, 'success');
     socket.emit('chat-message', {
       roomId: activeRoomId,
       username: '🎮 Game Master',
@@ -1034,7 +1109,6 @@ export default function App() {
     sound('success');
   };
 
-  
   const exportFormat = (format) => {
     if (!canvas) return;
     
@@ -1071,18 +1145,11 @@ export default function App() {
 
   return (
     <div className={`container theme-${theme}`}>
-      <div className="dreamscape-bg">
-        <div className="dream-sun" />
-        <div className="dream-grid" />
-        {[...Array(6)].map((_, i) => (
-          <div key={`cloud-${i}`} className="dream-cloud" style={{ width: `${80 + i * 30}px`, height: `${30 + i * 8}px`, top: `${10 + i * 9}%`, animationDuration: `${40 + i * 12}s`, animationDelay: `${-i * 7}s` }} />
-        ))}
-        {theme === 'dark' && [...Array(40)].map((_, i) => (
-          <div key={`star-${i}`} className="dream-star" style={{ left: `${Math.random() * 100}%`, top: `${Math.random() * 55}%`, animationDuration: `${2 + Math.random() * 3}s`, animationDelay: `${Math.random() * 3}s` }} />
-        ))}
-        {theme === 'dark' && [...Array(10)].map((_, i) => (
-          <div key={`firefly-${i}`} className="dream-firefly" style={{ left: `${Math.random() * 100}%`, top: `${55 + Math.random() * 35}%`, animationDuration: `${4 + Math.random() * 3}s`, animationDelay: `${Math.random() * 3}s` }} />
-        ))}
+      <div className="fluid-paint-bg">
+        <div className="paint-blob blob-1" />
+        <div className="paint-blob blob-2" />
+        <div className="paint-blob blob-3" />
+        <div className="paint-blob blob-4" />
       </div>
       
       {view === 'landing' && (
@@ -1157,19 +1224,26 @@ export default function App() {
       {view === 'auth' && (
         <div className="center-container fade-in">
           <div className="glass-panel auth-panel">
+            <button onClick={() => { sound('click'); setView('landing'); }} style={{ position: 'absolute', top: '20px', left: '20px', background: 'transparent', border: 'none', color: 'var(--ink)', cursor: 'pointer', fontSize: '1rem', fontWeight: 'bold' }}>⬅ Home</button>
             <button className="theme-toggle-btn corner-toggle" onClick={toggleTheme} title="Toggle light / dark theme">
               {theme === 'dark' ? '🌙' : '☀️'}
             </button>
             <h1 className="neon-text">CollaboDraw Pro</h1>
-            <h3 style={{ color: 'var(--ink)', marginBottom: '20px' }}>{isLogin ? 'Welcome Back' : 'Create Account'}</h3>
+            <h3 style={{ color: 'var(--ink)', marginBottom: '20px' }}>{isLogin ? 'Welcome back' : 'Create your account'}</h3>
             <form onSubmit={handleAuth}>
-              <input type="text" placeholder="Username" onChange={e => setUsername(e.target.value)} required />
-              <input type="password" placeholder="Password" onChange={e => setPassword(e.target.value)} required />
+              <div className="form-group">
+                <label htmlFor="auth-username">Username</label>
+                <input id="auth-username" type="text" placeholder="e.g. jane_doe" onChange={e => setUsername(e.target.value)} required />
+              </div>
+              <div className="form-group">
+                <label htmlFor="auth-password">Password</label>
+                <input id="auth-password" type="password" placeholder="••••••••" onChange={e => setPassword(e.target.value)} required />
+              </div>
               {authError && <p className="error-text">{authError}</p>}
-              <button className="primary-btn" type="submit">{isLogin ? 'LOGIN' : 'REGISTER'}</button>
+              <button className="primary-btn" type="submit">{isLogin ? 'Log In' : 'Create Account'}</button>
             </form>
             <p className="toggle-text" onClick={() => { setIsLogin(!isLogin); setAuthError(''); }}>
-              {isLogin ? "Need an account? Register here." : "Already have an account? Login."}
+              {isLogin ? "Need an account? Register here." : "Already have an account? Log in."}
             </p>
           </div>
         </div>
@@ -1181,7 +1255,6 @@ export default function App() {
             <div className="dash-header">
               <h1 className="neon-text">My Workspace</h1>
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                {/* Dashboard Clock */}
                 <div style={{ color: 'var(--firefly-gold)', fontWeight: '700', fontSize: '1rem', marginRight: '15px' }}>
                   {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
@@ -1202,9 +1275,23 @@ export default function App() {
             <div className="dash-grid">
               <div className="dash-section">
                 <h3 style={{ color: 'var(--dream-cyan)' }}>Create New Board</h3>
-                <form onSubmit={createBoard} style={{ display: 'flex', gap: '10px' }}>
-                  <input type="text" placeholder="Board Name" value={newBoardName} onChange={e => setNewBoardName(e.target.value)} required />
-                  <button className="primary-btn" type="submit" style={{width: 'auto'}}>Create</button>
+                
+                <form onSubmit={createBoard} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label htmlFor="new-board-name">Board Name</label>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <input id="new-board-name" type="text" placeholder="e.g. Sprint Planning" value={newBoardName} onChange={e => setNewBoardName(e.target.value)} required style={{ margin: 0 }} />
+                      <button className="primary-btn" type="submit" style={{width: 'auto'}}>Create</button>
+                    </div>
+                  </div>
+                  
+                  <div className="template-picker" style={{ marginTop: 0 }}>
+                    <span className="icon-label-text" style={{ display: 'block', marginBottom: '6px' }}>Board Access</span>
+                    <div className="template-options">
+                      <button type="button" className={`template-chip ${newBoardAccess === 'open' ? 'active' : ''}`} onClick={() => { setNewBoardAccess('open'); sound('click'); }}>🌐 Anyone with link can edit</button>
+                      <button type="button" className={`template-chip ${newBoardAccess === 'restricted' ? 'active' : ''}`} onClick={() => { setNewBoardAccess('restricted'); sound('click'); }}>🔒 Only Owner can edit</button>
+                    </div>
+                  </div>
                 </form>
 
                 <div className="template-picker">
@@ -1229,9 +1316,14 @@ export default function App() {
                 </div>
 
                 <h3 style={{ color: 'var(--dream-cyan)', margin: '30px 0 10px 0' }}>Join Shared Board</h3>
-                <form onSubmit={(e) => { e.preventDefault(); if (joinBoardId) enterBoard(joinBoardId); }} style={{ display: 'flex', gap: '10px' }}>
-                  <input type="text" placeholder="Enter Room ID" value={joinBoardId} onChange={e => setJoinBoardId(e.target.value)} required />
-                  <button className="primary-btn" type="submit" style={{width: 'auto'}}>Join</button>
+                <form onSubmit={(e) => { e.preventDefault(); if (joinBoardId) enterBoard(joinBoardId); }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label htmlFor="join-room-id">Room ID</label>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <input id="join-room-id" type="text" placeholder="Paste a Room ID" value={joinBoardId} onChange={e => setJoinBoardId(e.target.value)} required style={{ margin: 0 }} />
+                      <button className="primary-btn" type="submit" style={{width: 'auto'}}>Join</button>
+                    </div>
+                  </div>
                 </form>
               </div>
 
@@ -1345,6 +1437,21 @@ export default function App() {
           {focusMode ? '🎯 Exit Focus' : '🎯 Focus Mode'}
         </button>
 
+        {focusMode && (
+          <div className="focus-mini-toolbar fade-in">
+            <button onClick={zoomOut} title="Zoom out (-)">−</button>
+            <button onClick={zoomReset} title="Reset zoom (Ctrl+0)">100%</button>
+            <button onClick={zoomIn} title="Zoom in (+)">+</button>
+            {myRole !== 'viewer' && (
+              <>
+                <div className="divider vertical" />
+                <button onClick={() => { sound('undo'); suppressNextTick.current = true; socket.emit('undo', { roomId: activeRoomId, pageIndex: activePage }); }} title="Undo">↩️</button>
+                <button onClick={() => { sound('redo'); suppressNextTick.current = true; socket.emit('redo', { roomId: activeRoomId, pageIndex: activePage }); }} title="Redo">↪️</button>
+              </>
+            )}
+          </div>
+        )}
+
         {showWelcomeModal && (
           <div className="modal-backdrop welcome-modal-backdrop" onClick={() => setShowWelcomeModal(false)}>
             <div className="glass-panel welcome-modal scale-in" onClick={(e) => e.stopPropagation()}>
@@ -1375,7 +1482,6 @@ export default function App() {
           <div className="active-count" style={{marginLeft: '15px'}}>{Object.keys(activeUsers).length} Online</div>
           
           <div className="divider vertical" style={{ margin: '0 10px' }} />
-          {/* Canvas Clock */}
           <div style={{ color: 'var(--firefly-gold)', fontWeight: '700', fontSize: '0.95rem', marginRight: '10px' }}>
             {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </div>
@@ -1396,9 +1502,21 @@ export default function App() {
             <span className="icon-label-text">{voiceEnabled ? 'Mic On' : 'Voice Chat'}</span>
           </div>
 
-          <button className="share-btn" onClick={() => { navigator.clipboard.writeText(window.location.href); sound('click'); showToast('Invite link copied to clipboard!', 'success'); }}>🔗 Share</button>
-
-          <button className="share-btn qr-btn" onClick={() => { setShowQR(v => !v); sound('click'); }} title="Show QR code to scan-to-join">📱 QR</button>
+          <div className="toolbar-group">
+            <button className="share-btn" onClick={() => { toggleToolbarMenu('share'); sound('click'); }}>
+              🔗 Share {showShareMenu ? '▲' : '▼'}
+            </button>
+            {showShareMenu && (
+              <div className="toolbar-dropdown scale-in align-right">
+                <button onClick={() => { navigator.clipboard.writeText(window.location.href); sound('click'); showToast('Invite link copied to clipboard!', 'success'); setShowShareMenu(false); }}>
+                  🔗 Copy Invite Link
+                </button>
+                <button onClick={() => { setShowQR(v => !v); sound('click'); setShowShareMenu(false); }} title="Show QR code to scan-to-join">
+                  📱 Show QR Code
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {showQR && (
@@ -1433,22 +1551,56 @@ export default function App() {
             )}
             
             <div className="divider vertical" />
-            <button onClick={zoomOut} title="Zoom out (-)">🔍− Zoom Out</button>
-            <button onClick={zoomReset} title="Reset zoom (Ctrl+0)">100%</button>
-            <button onClick={zoomIn} title="Zoom in (+)">🔍+ Zoom In</button>
+
+            <div className="toolbar-group">
+              <button className={`toolbar-group-toggle ${showZoomMenu ? 'active' : ''}`} onClick={() => toggleToolbarMenu('zoom')} title="Zoom controls">
+                🔍 Zoom {showZoomMenu ? '▲' : '▼'}
+              </button>
+              {showZoomMenu && (
+                <div className="toolbar-dropdown scale-in">
+                  <button onClick={zoomOut} title="Zoom out (-)">🔍− Zoom Out</button>
+                  <button onClick={zoomReset} title="Reset zoom (Ctrl+0)">⭘ Reset (100%)</button>
+                  <button onClick={zoomIn} title="Zoom in (+)">🔍+ Zoom In</button>
+                </div>
+              )}
+            </div>
+
             <div className="divider vertical" />
-            <button onClick={() => exportFormat('png')}>💾 PNG</button>
-            <button onClick={() => exportFormat('pdf')} style={{color: '#f3ca20'}}>📄 PDF</button>
+
+            <div className="toolbar-group">
+              <button className={`toolbar-group-toggle ${showExportMenu ? 'active' : ''}`} onClick={() => toggleToolbarMenu('export')} title="Export board">
+                ⬇️ Export {showExportMenu ? '▲' : '▼'}
+              </button>
+              {showExportMenu && (
+                <div className="toolbar-dropdown scale-in">
+                  <button onClick={() => { exportFormat('png'); setShowExportMenu(false); }}>💾 Export as PNG</button>
+                  <button onClick={() => { exportFormat('pdf'); setShowExportMenu(false); }} style={{color: '#f3ca20'}}>📄 Export as PDF</button>
+                </div>
+              )}
+            </div>
+
             <div className="divider vertical" />
-            <button className="action-btn" style={{color: '#b066ff'}} onClick={() => { sound('click'); setShowHistory(!showHistory); }}>🕒 History</button>
-            {historyData.totalVersions > 1 && (
-              isReplaying ? (
-                <button className="action-btn replay-btn active" style={{color: 'var(--danger)'}} onClick={stopReplay}>⏹️ Stop Replay</button>
-              ) : (
-                <button className="action-btn replay-btn" style={{color: 'var(--sunset-pink)'}} onClick={startReplay} title="Watch this board build itself, version by version">▶️ Replay</button>
-              )
-            )}
-            <button className="action-btn" style={{color: 'var(--lavender)'}} onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts">⌨️ Shortcuts</button>
+
+            <div className="toolbar-group">
+              <button className={`toolbar-group-toggle ${showViewMenu ? 'active' : ''}`} onClick={() => toggleToolbarMenu('view')} title="Version history & help">
+                🕒 View {showViewMenu ? '▲' : '▼'}
+              </button>
+              {showViewMenu && (
+                <div className="toolbar-dropdown scale-in">
+                  <button style={{color: '#b066ff'}} onClick={() => { sound('click'); setShowHistory(!showHistory); setShowViewMenu(false); }}>🕒 History</button>
+                  {historyData.totalVersions > 1 && (
+                    isReplaying ? (
+                      <button className="replay-btn active" style={{color: 'var(--danger)'}} onClick={() => { stopReplay(); setShowViewMenu(false); }}>⏹️ Stop Replay</button>
+                    ) : (
+                      <button className="replay-btn" style={{color: 'var(--sunset-pink)'}} onClick={() => { startReplay(); setShowViewMenu(false); }} title="Watch this board build itself, version by version">▶️ Replay</button>
+                    )
+                  )}
+                  <button style={{color: 'var(--lavender)'}} onClick={() => { setShowShortcuts(true); setShowViewMenu(false); }} title="Keyboard shortcuts">⌨️ Shortcuts</button>
+                </div>
+              )}
+            </div>
+
+            <div className="divider vertical" />
             <button className="mute-btn labeled-icon-btn" onClick={toggleMute} title={muted ? 'Unmute sound effects' : 'Mute sound effects'}>
               {muted ? '🔇' : '🔊'} <span className="btn-label-text">Sound</span>
             </button>
@@ -1519,15 +1671,37 @@ export default function App() {
             
             <div className="divider horizontal" />
 
-            <button onClick={addSticky} title="Add sticky note (N)">🗒️ Sticky Note</button>
-            <button onClick={addCodeBlock} title="Add formatted code block">💻 Code Block</button>
+            <button
+              className={`draw-toggle-btn ${showInsertMenu ? 'active' : ''}`}
+              onClick={() => toggleToolbarMenu('insert')}
+              title="Insert sticky notes, code blocks, or images"
+            >
+              ➕ Insert {showInsertMenu ? '▲' : '▼'}
+            </button>
 
-            <label className="upload-btn" title="Upload an image">🖼️ Image Upload<input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} /></label>
+            {showInsertMenu && (
+              <div className="draw-tools-popout scale-in">
+                <button onClick={addSticky} title="Add sticky note (N)">🗒️ Sticky Note</button>
+                <button onClick={addCodeBlock} title="Add formatted code block">💻 Code Block</button>
+                <label className="upload-btn" title="Upload an image">🖼️ Image Upload<input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} /></label>
+              </div>
+            )}
 
-            <div className="divider horizontal" />
-            <button className="ai-feature-btn" onClick={addAIIdea} title="Get a random creative drawing prompt">✨ AI Muse</button>
-            <button className="game-feature-btn" onClick={startDoodleChallenge} title="Start a 2-minute guess-what-I'm-drawing round">🎮 Doodle Challenge</button>
-            
+            <button
+              className={`draw-toggle-btn ${showExtrasMenu ? 'active' : ''}`}
+              onClick={() => toggleToolbarMenu('extras')}
+              title="AI prompts and mini-games"
+            >
+              ✨ Extras {showExtrasMenu ? '▲' : '▼'}
+            </button>
+
+            {showExtrasMenu && (
+              <div className="draw-tools-popout scale-in">
+                <button className="ai-feature-btn" onClick={addAIIdea} title="Get a random creative drawing prompt">✨ AI Muse</button>
+                <button className="game-feature-btn" onClick={startDoodleChallenge} title="Start a 2-minute guess-what-I'm-drawing round">🎮 Doodle Challenge</button>
+              </div>
+            )}
+
             <div className="divider horizontal" />
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', width: '100%' }}>
               <span className="icon-label-text">Stroke Color &amp; Size</span>
@@ -1540,6 +1714,15 @@ export default function App() {
         )}
 
         <div id="canvas-wrapper" className="canvas-wrapper fade-in">
+          <div className="canvas-paint-ring">
+             <span className="paint-tool-icon pt1">🖌️</span>
+             <span className="paint-tool-icon pt2">✏️</span>
+             <span className="paint-tool-icon pt3">🎨</span>
+             <span className="paint-tool-icon pt4">🖍️</span>
+             <span className="paint-tool-icon pt5">✒️</span>
+             <span className="paint-tool-icon pt6">🖋️</span>
+          </div>
+
           <canvas id="fabric-canvas" />
 
           {Object.entries(activeUsers).map(([id, user]) => {
@@ -1670,6 +1853,17 @@ export default function App() {
         )}
 
       </div>
+
+      {splatters.map(s => (
+        <div key={s.id} className="click-ink-bloom" style={{
+          left: s.x,
+          top: s.y,
+          width: s.size,
+          height: s.size,
+          backgroundColor: s.color,
+          '--rot': `${s.rotation}deg`
+        }} />
+      ))}
     </div>
   );
 }
